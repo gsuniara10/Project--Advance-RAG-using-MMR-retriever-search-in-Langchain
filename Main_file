@@ -1,0 +1,74 @@
+from langchain_ollama import OllamaEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import Chroma 
+from dotenv import load_dotenv
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain.schema.runnable import RunnableParallel, RunnableBranch, RunnableLambda, RunnablePassthrough
+
+load_dotenv()
+
+loading_document = PyPDFLoader("Machine Learning. An Algorithmic Perspective 2nd ed.pdf")
+
+document_load = loading_document.load()
+
+embedding_llm = HuggingFaceEmbeddings(
+    model_name= "sentence-transformers/all-MiniLM-L6-v2"
+)
+
+simple_llm  = ChatGroq(
+     model="llama-3.1-8b-instant"
+)
+
+# embedding_llm = OllamaEmbeddings(
+#     model="llama3"
+# )
+
+splitting_document = RecursiveCharacterTextSplitter(chunk_size = 300, chunk_overlap = 50 )
+
+document_split = splitting_document.split_documents(document_load)
+
+storing_vectore_docs = Chroma.from_documents(
+    documents=document_split,
+    embedding=embedding_llm,
+    collection_name="my_collection"
+    )
+
+# Enable MMR in retriever for advance RAG
+retriever_object = storing_vectore_docs.as_retriever(search_type = "mmr",search_kwargs = {"k":4, "lambda_mult":1})
+
+retriever_prompt = PromptTemplate(
+    template="""
+        You are a expert assistant.
+        Answer ONLY from the provided transcript context.
+        If the context is insufficient, just say you don't know.
+        {context}
+        Question: {question}
+""",
+input_variables=["context","question"]
+)
+
+string_parser = StrOutputParser()
+
+query = input("Enter the query : ")
+
+retriever_output  = retriever_object.invoke(query)
+
+def extracting_docs(retriever_output):
+    context_text = "\n\n".join(extracted_document.page_content for extracted_document in retriever_output)
+    return context_text
+
+retriever_parallel_chain = RunnableParallel({
+    'context': retriever_object | RunnableLambda(extracting_docs),
+    'question': RunnablePassthrough()
+})
+
+final_retriever_chain = retriever_parallel_chain | retriever_prompt | simple_llm |string_parser
+
+
+llm_output = final_retriever_chain.invoke(query)
+
+print(llm_output)
